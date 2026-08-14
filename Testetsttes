@@ -1,0 +1,512 @@
+-- LocalScript: Advanced F3X / Cobalt Model & Mesh Inserter with Throttle & Offset
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local CoreGui = game:GetService("CoreGui")
+local UserInputService = game:GetService("UserInputService")
+local InsertService = game:GetService("InsertService")
+
+local LocalPlayer = Players.LocalPlayer
+
+-- Target Build Folder
+local TargetFolder = Workspace:WaitForChild("CustomMap"):WaitForChild("Map"):WaitForChild("Build")
+
+local function getServerEndpoint()
+	local character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+	local tool = character:FindFirstChild("Build") or LocalPlayer.Backpack:FindFirstChild("Build")
+	if tool and tool:FindFirstChild("SyncAPI") and tool.SyncAPI:FindFirstChild("ServerEndpoint") then
+		return tool.SyncAPI.ServerEndpoint
+	end
+	return nil
+end
+
+local isRunning = false
+local currentCatalog = {}
+local placedIndices = {}
+
+-- CLEANUP & CREATE GUI
+local oldGui = CoreGui:FindFirstChild("F3XMeshInserterHub") or LocalPlayer:WaitForChild("PlayerGui"):FindFirstChild("F3XMeshInserterHub")
+if oldGui then oldGui:Destroy() end
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "F3XMeshInserterHub"
+screenGui.ResetOnSpawn = false
+screenGui.DisplayOrder = 999999999
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+pcall(function() screenGui.Parent = CoreGui end)
+if not screenGui.Parent then screenGui.Parent = LocalPlayer:WaitForChild("PlayerGui") end
+
+-- MAIN CONTAINER
+local main = Instance.new("Frame")
+main.Size = UDim2.new(0, 340, 0, 460)
+main.Position = UDim2.new(0.5, -170, 0.5, -230)
+main.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
+main.BorderColor3 = Color3.fromRGB(60, 60, 60)
+main.BorderSizePixel = 2
+main.Active = true
+main.Parent = screenGui
+
+-- UI DRAGGING SYSTEM
+local dragging, dragInput, dragStart, startPos
+main.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		dragging = true
+		dragStart = input.Position
+		startPos = main.Position
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then dragging = false end
+		end)
+	end
+end)
+main.InputChanged:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then dragInput = input end
+end)
+UserInputService.InputChanged:Connect(function(input)
+	if input == dragInput and dragging then
+		local delta = input.Position - dragStart
+		main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+	end
+end)
+
+-- TITLE BAR
+local titleBar = Instance.new("Frame")
+titleBar.Size = UDim2.new(1, 0, 0, 28)
+titleBar.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
+titleBar.BorderColor3 = Color3.fromRGB(50, 50, 50)
+titleBar.BorderSizePixel = 1
+titleBar.Parent = main
+
+local titleText = Instance.new("TextLabel")
+titleText.Size = UDim2.new(1, -10, 1, 0)
+titleText.Position = UDim2.new(0, 10, 0, 0)
+titleText.BackgroundTransparency = 1
+titleText.Text = "COBALT / F3X MESH & MODEL INSERTER"
+titleText.TextColor3 = Color3.fromRGB(240, 240, 240)
+titleText.Font = Enum.Font.Code
+titleText.TextSize = 11
+titleText.TextXAlignment = Enum.TextXAlignment.Left
+titleText.Parent = titleBar
+
+-- INPUT CONTAINER
+local content = Instance.new("Frame")
+content.Size = UDim2.new(1, -20, 1, -140)
+content.Position = UDim2.new(0, 10, 0, 35)
+content.BackgroundTransparency = 1
+content.Parent = main
+
+local listLayout = Instance.new("UIListLayout")
+listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+listLayout.Padding = UDim.new(0, 5)
+listLayout.Parent = content
+
+local function addInput(labelText, defaultText)
+	local container = Instance.new("Frame")
+	container.Size = UDim2.new(1, 0, 0, 36)
+	container.BackgroundTransparency = 1
+	container.Parent = content
+
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.new(1, 0, 0, 12)
+	lbl.BackgroundTransparency = 1
+	lbl.Text = labelText
+	lbl.TextColor3 = Color3.fromRGB(140, 140, 140)
+	lbl.Font = Enum.Font.Code
+	lbl.TextSize = 10
+	lbl.TextXAlignment = Enum.TextXAlignment.Left
+	lbl.Parent = container
+
+	local box = Instance.new("TextBox")
+	box.Size = UDim2.new(1, 0, 0, 20)
+	box.Position = UDim2.new(0, 0, 0, 14)
+	box.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+	box.BorderColor3 = Color3.fromRGB(50, 50, 50)
+	box.Text = defaultText
+	box.TextColor3 = Color3.fromRGB(200, 200, 200)
+	box.Font = Enum.Font.Code
+	box.TextSize = 10
+	box.ClearTextOnFocus = false
+	box.Parent = container
+	return box
+end
+
+-- MULTI-INPUT (X, Y, Z PLANE OFFSET ROW)
+local function addOffsetInputs()
+	local container = Instance.new("Frame")
+	container.Size = UDim2.new(1, 0, 0, 36)
+	container.BackgroundTransparency = 1
+	container.Parent = content
+
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.new(1, 0, 0, 12)
+	lbl.BackgroundTransparency = 1
+	lbl.Text = "POSITION OFFSET (X, Y, Z)"
+	lbl.TextColor3 = Color3.fromRGB(140, 140, 140)
+	lbl.Font = Enum.Font.Code
+	lbl.TextSize = 10
+	lbl.TextXAlignment = Enum.TextXAlignment.Left
+	lbl.Parent = container
+
+	local boxX = Instance.new("TextBox")
+	boxX.Size = UDim2.new(0.31, 0, 0, 20)
+	boxX.Position = UDim2.new(0, 0, 0, 14)
+	boxX.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+	boxX.BorderColor3 = Color3.fromRGB(50, 50, 50)
+	boxX.Text = "0"
+	boxX.TextColor3 = Color3.fromRGB(200, 200, 200)
+	boxX.Font = Enum.Font.Code
+	boxX.TextSize = 10
+	boxX.ClearTextOnFocus = false
+	boxX.Parent = container
+
+	local boxY = Instance.new("TextBox")
+	boxY.Size = UDim2.new(0.31, 0, 0, 20)
+	boxY.Position = UDim2.new(0.345, 0, 0, 14)
+	boxY.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+	boxY.BorderColor3 = Color3.fromRGB(50, 50, 50)
+	boxY.Text = "0"
+	boxY.TextColor3 = Color3.fromRGB(200, 200, 200)
+	boxY.Font = Enum.Font.Code
+	boxY.TextSize = 10
+	boxY.ClearTextOnFocus = false
+	boxY.Parent = container
+
+	local boxZ = Instance.new("TextBox")
+	boxZ.Size = UDim2.new(0.31, 0, 0, 20)
+	boxZ.Position = UDim2.new(0.69, 0, 0, 14)
+	boxZ.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+	boxZ.BorderColor3 = Color3.fromRGB(50, 50, 50)
+	boxZ.Text = "0"
+	boxZ.TextColor3 = Color3.fromRGB(200, 200, 200)
+	boxZ.Font = Enum.Font.Code
+	boxZ.TextSize = 10
+	boxZ.ClearTextOnFocus = false
+	boxZ.Parent = container
+
+	return boxX, boxY, boxZ
+end
+
+-- INPUT FIELDS
+local assetIdBox = addInput("MODEL / MAP / GAME PLACE ID", "0")
+local offsetXBox, offsetYBox, offsetZBox = addOffsetInputs()
+local speedBox = addInput("PLACEMENT SPEED (PARTS / SEC)", "3")
+
+-- STATUS DISPLAY
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Size = UDim2.new(1, -20, 0, 20)
+statusLabel.Position = UDim2.new(0, 10, 1, -95)
+statusLabel.BackgroundTransparency = 1
+statusLabel.Text = "[STATUS]: IDLE"
+statusLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+statusLabel.Font = Enum.Font.Code
+statusLabel.TextSize = 10
+statusLabel.TextWrapped = true
+statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+statusLabel.Parent = main
+
+-- GET OFFSET VECTOR & SPEED
+local function getOffsetVector()
+	local x = tonumber(offsetXBox.Text) or 0
+	local y = tonumber(offsetYBox.Text) or 0
+	local z = tonumber(offsetZBox.Text) or 0
+	return Vector3.new(x, y, z)
+end
+
+local function getPlacementDelay()
+	local pps = tonumber(speedBox.Text) or 3
+	if pps <= 0 then pps = 3 end
+	return 1 / pps
+end
+
+-- EXTRACT NUMBER ID FROM ASSET STRINGS
+local function parseAssetId(assetString)
+	if type(assetString) == "number" then return assetString end
+	if type(assetString) == "string" then
+		local num = string.match(assetString, "%d+")
+		return tonumber(num)
+	end
+	return nil
+end
+
+-- EXTRACT ALL PARTS, MESHES, AND TEXTURES
+local function extractPartsAndMeshes(container)
+	local partCatalog = {}
+
+	for _, descendant in ipairs(container:GetDescendants()) do
+		if descendant:IsA("BasePart") and descendant.Transparency < 1 then
+			local entry = {
+				cframe = descendant.CFrame,
+				size = descendant.Size,
+				color = descendant.Color,
+				material = descendant.Material,
+				shape = descendant:IsA("WedgePart") and "Wedge" or (descendant:IsA("CornerWedgePart") and "CornerWedge" or "Normal"),
+				meshId = nil,
+				textureId = nil
+			}
+
+			if descendant:IsA("MeshPart") then
+				entry.meshId = parseAssetId(descendant.MeshId)
+				entry.textureId = parseAssetId(descendant.TextureID)
+			end
+
+			local specialMesh = descendant:FindFirstChildOfClass("SpecialMesh")
+			if specialMesh then
+				entry.meshId = parseAssetId(specialMesh.MeshId)
+				entry.textureId = parseAssetId(specialMesh.TextureId)
+			end
+
+			local decal = descendant:FindFirstChildOfClass("Decal") or descendant:FindFirstChildOfClass("Texture")
+			if decal and not entry.textureId then
+				entry.textureId = parseAssetId(decal.Texture)
+			end
+
+			table.insert(partCatalog, entry)
+		end
+	end
+
+	return partCatalog
+end
+
+-- UNIVERSAL ASSET / PLACE LOADER
+local function loadAssetOrPlace(id)
+	local resultContainer = Instance.new("Folder")
+	resultContainer.Name = "InsertedAsset_" .. tostring(id)
+
+	local success, objects = pcall(function()
+		return game:GetObjects("rbxassetid://" .. tostring(id))
+	end)
+
+	if success and objects and #objects > 0 then
+		for _, obj in ipairs(objects) do
+			obj.Parent = resultContainer
+		end
+		return resultContainer
+	end
+
+	success, objects = pcall(function()
+		return InsertService:LoadAsset(id)
+	end)
+
+	if success and objects then
+		objects.Parent = resultContainer
+		return resultContainer
+	end
+
+	resultContainer:Destroy()
+	return nil
+end
+
+-- F3X / COBALT REPLICATION METHOD
+local function placePartViaF3X(data, ServerEndpoint, index, offsetVector)
+	local spawnedPart = nil
+	local connection
+
+	local finalCFrame = data.cframe + offsetVector
+
+	connection = TargetFolder.ChildAdded:Connect(function(child)
+		spawnedPart = child
+	end)
+
+	-- 1. Create Base Part
+	pcall(function()
+		ServerEndpoint:InvokeServer(
+			"CreatePart",
+			data.shape == "Normal" and "Part" or data.shape,
+			finalCFrame,
+			TargetFolder
+		)
+	end)
+
+	local t = 0
+	while not spawnedPart and t < 0.25 do
+		task.wait(0.01)
+		t = t + 0.01
+	end
+
+	if connection then connection:Disconnect() end
+	local targetPart = spawnedPart or TargetFolder:GetChildren()[#TargetFolder:GetChildren()]
+
+	if targetPart then
+		placedIndices[index] = true
+
+		-- 2. Resize & Position
+		pcall(function()
+			ServerEndpoint:InvokeServer("SyncResize", {
+				{
+					Part = targetPart,
+					CFrame = finalCFrame,
+					Size = data.size
+				}
+			})
+		end)
+
+		-- 3. Material
+		pcall(function()
+			ServerEndpoint:InvokeServer("SyncMaterial", {
+				{
+					Part = targetPart,
+					CFrame = finalCFrame,
+					Material = data.material or Enum.Material.Plastic
+				}
+			})
+		end)
+
+		-- 4. Color
+		pcall(function()
+			ServerEndpoint:InvokeServer("SyncColor", {
+				{
+					Part = targetPart,
+					UnionColoring = true,
+					Color = data.color
+				}
+			})
+		end)
+
+		-- 5. Attach Mesh
+		if data.meshId and data.meshId > 0 then
+			pcall(function()
+				ServerEndpoint:InvokeServer("CreateMeshes", {
+					{
+						Part = targetPart
+					}
+				})
+			end)
+
+			pcall(function()
+				ServerEndpoint:InvokeServer("ExtractMeshFromAsset", data.meshId)
+			end)
+		end
+
+		-- 6. Attach Texture
+		if data.textureId and data.textureId > 0 then
+			pcall(function()
+				ServerEndpoint:InvokeServer("ExtractImageFromDecal", data.textureId)
+			end)
+		end
+	end
+end
+
+-- SEQUENTIAL CONTROLLED BATCH RUNNER
+local function runBatch(targetIndices)
+	local ServerEndpoint = getServerEndpoint()
+	if not ServerEndpoint then
+		statusLabel.Text = "[ERROR]: 'Build' TOOL NOT FOUND IN BACKPACK/CHARACTER"
+		isRunning = false
+		return
+	end
+
+	local offsetVector = getOffsetVector()
+	local delayTime = getPlacementDelay()
+	local total = #targetIndices
+	local completed = 0
+
+	for _, i in ipairs(targetIndices) do
+		if not isRunning then break end
+
+		placePartViaF3X(currentCatalog[i], ServerEndpoint, i, offsetVector)
+		completed = completed + 1
+		statusLabel.Text = "[STATUS]: PLACING PARTS... " .. completed .. " / " .. total
+
+		task.wait(delayTime)
+	end
+
+	task.wait(0.3)
+	local unplacedCount = 0
+	for _, idx in ipairs(targetIndices) do
+		if not placedIndices[idx] then
+			unplacedCount = unplacedCount + 1
+		end
+	end
+
+	if unplacedCount > 0 then
+		statusLabel.Text = "[STATUS]: FINISHED. " .. unplacedCount .. " UNPLACED PARTS REMAINING."
+	else
+		statusLabel.Text = "[STATUS]: MODEL / MESH MAP REPLICATED SUCCESSFULLY!"
+	end
+	isRunning = false
+end
+
+-- BUTTON 1: INSERT & REPLICATE
+local insertBtn = Instance.new("TextButton")
+insertBtn.Size = UDim2.new(1, -20, 0, 24)
+insertBtn.Position = UDim2.new(0, 10, 1, -62)
+insertBtn.BackgroundColor3 = Color3.fromRGB(25, 40, 55)
+insertBtn.BorderColor3 = Color3.fromRGB(50, 80, 110)
+insertBtn.BorderSizePixel = 1
+insertBtn.Text = "> INSERT & REPLICATE (CONTROLLED SPEED)"
+insertBtn.TextColor3 = Color3.fromRGB(180, 220, 255)
+insertBtn.Font = Enum.Font.Code
+insertBtn.TextSize = 10
+insertBtn.Parent = main
+
+-- BUTTON 2: RETRY UNPLACED
+local retryBtn = Instance.new("TextButton")
+retryBtn.Size = UDim2.new(1, -20, 0, 24)
+retryBtn.Position = UDim2.new(0, 10, 1, -32)
+retryBtn.BackgroundColor3 = Color3.fromRGB(40, 25, 25)
+retryBtn.BorderColor3 = Color3.fromRGB(80, 40, 40)
+retryBtn.BorderSizePixel = 1
+retryBtn.Text = "RETRY UNPLACED PARTS"
+retryBtn.TextColor3 = Color3.fromRGB(220, 180, 180)
+retryBtn.Font = Enum.Font.Code
+retryBtn.TextSize = 10
+retryBtn.Parent = main
+
+insertBtn.MouseButton1Click:Connect(function()
+	if isRunning then return end
+	local id = tonumber(assetIdBox.Text)
+	if not id or id <= 0 then
+		statusLabel.Text = "[ERROR]: PLEASE ENTER A VALID ID"
+		return
+	end
+
+	isRunning = true
+	statusLabel.Text = "[STATUS]: DOWNLOADING ASSET ID " .. id .. "..."
+
+	task.spawn(function()
+		local container = loadAssetOrPlace(id)
+		if not container then
+			statusLabel.Text = "[ERROR]: COULD NOT LOAD ASSET ID " .. id
+			isRunning = false
+			return
+		end
+
+		statusLabel.Text = "[STATUS]: SCANNING MESHES & TEXTURES..."
+		currentCatalog = extractPartsAndMeshes(container)
+		placedIndices = {}
+		container:Destroy()
+
+		if #currentCatalog == 0 then
+			statusLabel.Text = "[ERROR]: NO VALID PARTS/MESHES FOUND IN MODEL"
+			isRunning = false
+			return
+		end
+
+		local indices = {}
+		for i = 1, #currentCatalog do table.insert(indices, i) end
+		runBatch(indices)
+	end)
+end)
+
+retryBtn.MouseButton1Click:Connect(function()
+	if isRunning then return end
+	if #currentCatalog == 0 then
+		statusLabel.Text = "[ERROR]: NO CATALOG DATA TO RETRY"
+		return
+	end
+
+	local unplacedIndices = {}
+	for i = 1, #currentCatalog do
+		if not placedIndices[i] then
+			table.insert(unplacedIndices, i)
+		end
+	end
+
+	if #unplacedIndices == 0 then
+		statusLabel.Text = "[STATUS]: ALL PARTS ALREADY PLACED!"
+		return
+	end
+
+	isRunning = true
+	statusLabel.Text = "[RETRY]: RETRYING " .. #unplacedIndices .. " UNPLACED PARTS..."
+	runBatch(unplacedIndices)
+end)
